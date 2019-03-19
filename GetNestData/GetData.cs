@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
 using GetNestData.Models;
@@ -17,7 +17,6 @@ namespace GetNestData
     public static class GetData
     {
         private static readonly HttpClient HttpClient = new HttpClient();
-
 
         [FunctionName("GetData")]
         public static async Task Run([TimerTrigger("0 */5 * * * *")]TimerInfo myTimer, TraceWriter log, ExecutionContext context)
@@ -41,17 +40,19 @@ namespace GetNestData
         private static async Task<dynamic> GetNestData()
         {
             var requestUri = new Uri("https://developer-api.nest.com/");
-            HttpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {Settings.NestApiKey}");
-            var response = await HttpClient.GetAsync(requestUri);
+            var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Settings.NestApiKey);
+            var response = await HttpClient.SendAsync(request);
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 var finalRequestUri = response.RequestMessage.RequestUri;
                 if (finalRequestUri != requestUri && finalRequestUri.Host.EndsWith(".nest.com")) // detect that a redirect actually did occur.
                 {
-                    response = await HttpClient.GetAsync(finalRequestUri);
+                    var finalRequest = new HttpRequestMessage(HttpMethod.Get, finalRequestUri);
+                    finalRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Settings.NestApiKey);
+                    response = await HttpClient.SendAsync(finalRequest);
                 }
             }
-            HttpClient.DefaultRequestHeaders.Remove("Authorization");
             var responseBody = await response.Content.ReadAsStringAsync();
             dynamic data = JsonConvert.DeserializeObject(responseBody);
             return data;
@@ -110,13 +111,14 @@ namespace GetNestData
         private static async Task SaveData(Reading reading, long timestamp)
         {
             var token = await GetGoogleCredential();
-            HttpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+            var requestUri = new Uri($"https://nest-eced3.firebaseio.com/readings/{timestamp}.json");
             var content = new StringContent(JsonConvert.SerializeObject(reading, new JsonSerializerSettings
             {
                 ContractResolver = new CamelCasePropertyNamesContractResolver()
             }), Encoding.UTF8, "application/json");
-            await HttpClient.PutAsync("https://nest-eced3.firebaseio.com/readings/" + timestamp + ".json", content);
-            HttpClient.DefaultRequestHeaders.Remove("Authorization");
+            var request = new HttpRequestMessage(HttpMethod.Put, requestUri) {Content = content};
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            await HttpClient.SendAsync(request);
         }
 
         private static async Task<double?> GetTemperatureOutside()
@@ -126,7 +128,7 @@ namespace GetNestData
                 var response = await HttpClient.GetAsync(Settings.WeatherApi);
                 var responseBody = await response.Content.ReadAsStringAsync();
                 dynamic data = JsonConvert.DeserializeObject(responseBody);
-                return data.current_observation.temp_f;
+                return data.currently.temperature;
             }
             catch (Exception)
             {
